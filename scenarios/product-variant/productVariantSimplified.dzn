@@ -1,14 +1,16 @@
-% DOCUMENT_NUMBER represents the number of documents in the catalog
+% PRODUCT_NUMBER represents the number of products in the catalog
+% VARIANT_NUMBER represents the number of variants in the catalog
 % METADATA_KEY_NUMBER represents the total number of metadata key
-% product_matrix is a matrix DOCUMENT_NUMBER x METADATA_KEY giving the metadata value for a metadata key on a specific document
+% product_matrix is a matrix PRODUCT_NUMBER x METADATA_KEY giving the metadata value for a metadata key on a specific product
+% variant_matrix is a matrix VARIANT_NUMBER x METADATA_KEY giving the metadata value for a metadata key on a specific variant
 
 PRODUCT_NUMBER = 3;
 VARIANT_NUMBER = 7;
 METADATA_KEY_NUMBER = 8;
 product_matrix = [|
-    2, 10, 20, 21, 0, 0, 0, 0 |
-    0, 11, 0, 21, 22, 0, 0, 0 |
-    1, 12, 20, 0, 23, 0, 0, 0 |];
+    2, 10, 20, 21, 0 |
+    0, 11, 0, 21, 22 |
+    1, 12, 20, 0, 23 |];
 variant_matrix = [|
     1, 2, 0, 2, 10, 90, 12, 0  |
     0, 0, 2, 1, 11, 91, 12, 13 |
