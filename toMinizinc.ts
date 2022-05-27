@@ -7,18 +7,17 @@ import {
   MetadataValue,
   parseAndGetDocumentBuilderFromJSONDocument,
 } from '@coveo/push-api-client';
-import {appendFile, appendFileSync, writeFileSync} from 'fs';
 import PlatformClient, {Environment} from '@coveord/platform-client';
 import {createHash} from 'crypto';
 
 type FieldTable = string[];
-interface VariantModel {
-  productCount: number;
-  variantCount: number;
-  metadataCount: number;
-  productMatrix: number[][];
-  variantMatrix: number[][];
-}
+// interface VariantModel {
+//   objectTypeACount: number;
+//   objectTypeBCount: number;
+//   metadataCount: number;
+//   matrixA: number[][];
+//   matrixB: number[][];
+// }
 
 // const HACHES: Set<number> = new Set();
 // function buildMatrix(): string {
@@ -73,20 +72,6 @@ function getAllMetadataValues() {
   // return Array.from(HACHES.values());
 }
 
-// function buildModel(model: VariantModel): string {
-//   const productMatrix = model.productMatrix.join(`|${EOL}`);
-//   const variantMatrix = model.variantMatrix.join(`|${EOL}`);
-//   return dedent`
-// PRODUCT_NUMBER = ${model.productCount};
-// VARIANT_NUMBER = ${model.variantCount};
-// METADATA_KEY_NUMBER = ${model.metadataCount};
-// product_matrix = [|
-//     ${productMatrix} |];
-// variant_matrix = [|
-//     ${variantMatrix}|];
-// `;
-// }
-
 function getClient() {
   return new PlatformClient({
     organizationId: 'clitestsnapshot9ywhd358',
@@ -95,13 +80,13 @@ function getClient() {
   });
 }
 
-async function getFieldIndexTable(productFiles: string[]): Promise<FieldTable> {
+async function getFieldIndexTable(filePaths: string[]): Promise<FieldTable> {
   // const client = getClient() as any;
   // const analyser = new FieldAnalyser(client);
   // const docBuilders: DocumentBuilder[] = []; // TODO: should instead leverage the callback to not use a lot of memory
   // // const callback = async (docBuilder: DocumentBuilder) => TODO: something is not working with that approach
   // //   await analyser.add([docBuilder]);
-  // for (const filePath of productFiles) {
+  // for (const filePath of filePaths) {
   //   docBuilders.push(...parseAndGetDocumentBuilderFromJSONDocument(filePath));
   // }
   // // TODO: remove all array fields
@@ -155,24 +140,21 @@ async function getFieldIndexTable(productFiles: string[]): Promise<FieldTable> {
   ];
 }
 
-async function getMatrices(productFiles: string[], fieldTable: FieldTable) {
-  let productCount = 0;
-  let variantCount = 0;
+async function getMatrices(filePaths: string[], fieldTable: FieldTable) {
   // TODO: try with a dictionnary where the keys are the metadata keys and the values are a list of posible metadata values.
-  // That way,  no need to parse twice and no need to transpose
-  const productMatrix: number[][] = [];
-  const variantMatrix: number[][] = [];
+  // That way, no need to transpose
+  const matrixA: number[][] = [];
+  const matrixB: number[][] = [];
 
   const matrixBuilderCallback = async (docBuilder: DocumentBuilder) => {
     const {metadata} = docBuilder.build();
     switch (metadata?.objecttype) {
+      // TODO: get the objecttype values on the first document parse
       case 'Product':
-        productMatrix.push(buildMatrixRow(metadata, fieldTable));
-        productCount++;
+        matrixA.push(buildMatrixRow(metadata, fieldTable));
         break;
       case 'Variant':
-        variantMatrix.push(buildMatrixRow(metadata, fieldTable));
-        variantCount++;
+        matrixB.push(buildMatrixRow(metadata, fieldTable));
         break;
 
       default:
@@ -181,16 +163,19 @@ async function getMatrices(productFiles: string[], fieldTable: FieldTable) {
   };
 
   //   Second parse to build product matrix
-  for (const filePath of productFiles) {
+  for (const filePath of filePaths) {
     parseAndGetDocumentBuilderFromJSONDocument(filePath, {
       callback: matrixBuilderCallback,
     });
   }
 
-  return {
-    productMatrix: transposeMatrix(productMatrix),
-    variantMatrix: transposeMatrix(variantMatrix),
+  console.time('transpose');
+  const obj = {
+    matrixA: transposeMatrix(matrixA),
+    matrixB: transposeMatrix(matrixB),
   };
+  console.timeEnd('transpose');
+  return obj;
 }
 
 function transposeMatrix<T>(matrix: T[][]): T[][] {
@@ -209,23 +194,71 @@ function transposeMatrix<T>(matrix: T[][]): T[][] {
 }
 
 export async function getCatalogFieldIds() {
-  const productFiles = [
+  const filePaths = [
     '/Users/ylakhdar/sandbox/dev_hour_10.0/data/raw_catalog/products.json',
     '/Users/ylakhdar/sandbox/dev_hour_10.0/data/raw_catalog/variants.json',
   ];
-  const fieldTable = await getFieldIndexTable(productFiles);
-  const {productMatrix, variantMatrix} = await getMatrices(
-    productFiles,
+  const fieldTable = await getFieldIndexTable(filePaths);
+  const {matrixA, matrixB} = await getMatrices(filePaths, fieldTable);
+  const uniqueObjectTypeAMetadataKeys = findUniqueMetadataKeysInMatrix(matrixA);
+  const uniqueObjectTypeBMetadataKeys = findUniqueMetadataKeysInMatrix(matrixB);
+
+  // try the 2 alternatives
+  const {productIdFields, variantIdFields} = findProductIdField(
+    matrixA,
+    matrixB,
+    uniqueObjectTypeAMetadataKeys,
+    uniqueObjectTypeBMetadataKeys,
     fieldTable
   );
-  const uniqueProductMetadataKeys =
-    findUniqueMetadataKeysInMatrix(productMatrix);
-  const uniqueVariantMetadataKeys =
-    findUniqueMetadataKeysInMatrix(variantMatrix);
-  console.log('*********************');
-  console.log(uniqueProductMetadataKeys.map((i) => fieldTable[i]));
-  console.log(uniqueVariantMetadataKeys.map((i) => fieldTable[i]));
-  console.log('*********************');
+
+  if (productIdFields.length === 0) {
+    const {productIdFields, variantIdFields} = findProductIdField(
+      matrixA,
+      matrixB,
+      uniqueObjectTypeBMetadataKeys,
+      uniqueObjectTypeAMetadataKeys,
+      fieldTable
+    );
+    return {
+      productIdFields,
+      variantIdFields,
+    };
+  }
+
+  return {
+    // TODO: return product object type and variant object type
+    productIdFields,
+    variantIdFields,
+  };
+}
+
+function findProductIdField(
+  matrixA: number[][],
+  matrixB: number[][],
+  uniqueObjectTypeAMetadataKeys: number[],
+  uniqueObjectTypeBMetadataKeys: number[],
+  fieldTable: FieldTable
+) {
+  // TODO: can be optimized
+  const productIdCandidates: number[] = [];
+  for (const metdataKeyIndex of uniqueObjectTypeAMetadataKeys) {
+    const objectTypeASet = new Set(matrixA[metdataKeyIndex]);
+    const objectTypeBSet = new Set(matrixB[metdataKeyIndex]);
+    if (setAreEqual(objectTypeASet, objectTypeBSet)) {
+      productIdCandidates.push(metdataKeyIndex);
+    }
+  }
+  return {
+    productIdFields: productIdCandidates.map((i) => fieldTable[i]),
+    variantIdFields: uniqueObjectTypeBMetadataKeys.map((i) => fieldTable[i]),
+  };
+}
+
+function setAreEqual(setA: Set<number>, setB: Set<number>) {
+  if (setA.size !== setB.size) return false;
+  for (const a of setA) if (!setB.has(a)) return false;
+  return true;
 }
 
 /**
