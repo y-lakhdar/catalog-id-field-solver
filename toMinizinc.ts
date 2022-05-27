@@ -10,6 +10,7 @@ import {
 import PlatformClient, {Environment} from '@coveord/platform-client';
 import {createHash} from 'crypto';
 
+type MatrixValue = string | number | null;
 type FieldTable = string[];
 // interface VariantModel {
 //   objectTypeACount: number;
@@ -24,52 +25,55 @@ type FieldTable = string[];
 //   throw 'TODO:';
 // }
 
-function encodeString(str: MetadataValue): number {
-  switch (typeof str) {
+function encodeString(value: MetadataValue): MatrixValue {
+  switch (typeof value) {
     case 'number':
-      return 0;
+      return value;
 
     case 'string':
-      const hashed = hash(str);
+      const hashed = hash(value);
       // TODO: transpose all hash to smaller numbers
       return hashed;
 
     default:
-      return 0;
+      return null;
   }
 }
 
 function hash(word: string) {
-  // TODO: find a better hashing (without collision)
-  const bytes = 7; // wanted to use 8 bytes, but it can exceed the integer limit of 64 bit
-  // TODO: only hash if the string
-  // TODO: only hash if the string is greather than something.
-  const hash = createHash('shake256', {outputLength: bytes}).update(word);
-  const hex = hash.digest('hex');
-  const hashedInt = parseInt(hex, 16);
-  return hashedInt;
+  // TODO: simply hash the value if greater than lets say 255. In which case, it is very unlikely the id field would be that long
+  const stringLengthLimit = 25;
+  // if (word.length < stringLengthLimit) {
+  //   // Product Id and sku id are generaly under 16 characters as a best commerce standard. Otherwise we hash long strings to use less memory
+  //   // TODO: find a better number. no magic number
+  //   return word;
+  // }
+  // Using the fastest hashing algorithm with less collisions
+  // const hash = createHash('sha256').update(word);
+  // const hex = hash.digest('base64');
+  // return word.slice(0, stringLengthLimit);
+  // return hex
+  return word;
 }
 
-function buildMatrixRow(metadata: Metadata, fieldTable: FieldTable): number[] {
-  // Should build a matrix different for products and variants
-  const encodedDocument: number[] = Array(fieldTable.length).fill(0);
-  for (let i = 0; i < fieldTable.length; i++) {
-    const encodedString = encodeString(metadata[fieldTable[i]]);
-    if (encodedString) {
-      encodedDocument[i] = encodedString;
+function addToMap(matrix: Map<string, MatrixValue[]>, metadata: Metadata) {
+  for (const [key, value] of Object.entries(metadata)) {
+    let matrixValue = matrix.get(key);
+    if (matrixValue === undefined) {
+      matrixValue = [];
     }
+    matrixValue.push(encodeString(value));
+    matrix.set(key, matrixValue);
   }
-  return encodedDocument;
-}
 
-function isValidIdField(metadataValue: MetadataValue): boolean {
-  const metadataValueType = typeof metadataValue;
-  const allowedTypes = ['string', 'number'];
-  return allowedTypes.includes(metadataValueType);
-}
-
-function getAllMetadataValues() {
-  // return Array.from(HACHES.values());
+  // const encodedDocument: MatrixValue[] = Array(fieldTable.length).fill(0);
+  // for (let i = 0; i < fieldTable.length; i++) {
+  //   const encodedString = encodeString(metadata[fieldTable[i]]);
+  //   if (encodedString) {
+  //     encodedDocument[i] = encodedString;
+  //   }
+  // }
+  // return encodedDocument;
 }
 
 function getClient() {
@@ -140,21 +144,21 @@ async function getFieldIndexTable(filePaths: string[]): Promise<FieldTable> {
   ];
 }
 
-async function getMatrices(filePaths: string[], fieldTable: FieldTable) {
+async function getMatrices(filePaths: string[]) {
   // TODO: try with a dictionnary where the keys are the metadata keys and the values are a list of posible metadata values.
   // That way, no need to transpose
-  const matrixA: number[][] = [];
-  const matrixB: number[][] = [];
+  const matrixA: Map<string, MatrixValue[]> = new Map();
+  const matrixB: Map<string, MatrixValue[]> = new Map();
 
   const matrixBuilderCallback = async (docBuilder: DocumentBuilder) => {
     const {metadata} = docBuilder.build();
     switch (metadata?.objecttype) {
       // TODO: get the objecttype values on the first document parse
       case 'Product':
-        matrixA.push(buildMatrixRow(metadata, fieldTable));
+        addToMap(matrixA, metadata);
         break;
       case 'Variant':
-        matrixB.push(buildMatrixRow(metadata, fieldTable));
+        addToMap(matrixB, metadata);
         break;
 
       default:
@@ -169,13 +173,7 @@ async function getMatrices(filePaths: string[], fieldTable: FieldTable) {
     });
   }
 
-  console.time('transpose');
-  const obj = {
-    matrixA: transposeMatrix(matrixA),
-    matrixB: transposeMatrix(matrixB),
-  };
-  console.timeEnd('transpose');
-  return obj;
+  return {matrixA, matrixB};
 }
 
 function transposeMatrix<T>(matrix: T[][]): T[][] {
@@ -198,8 +196,8 @@ export async function getCatalogFieldIds() {
     '/Users/ylakhdar/sandbox/dev_hour_10.0/data/raw_catalog/products.json',
     '/Users/ylakhdar/sandbox/dev_hour_10.0/data/raw_catalog/variants.json',
   ];
-  const fieldTable = await getFieldIndexTable(filePaths);
-  const {matrixA, matrixB} = await getMatrices(filePaths, fieldTable);
+  // const fieldTable = await getFieldIndexTable(filePaths);
+  const {matrixA, matrixB} = await getMatrices(filePaths);
   const uniqueObjectTypeAMetadataKeys = findUniqueMetadataKeysInMatrix(matrixA);
   const uniqueObjectTypeBMetadataKeys = findUniqueMetadataKeysInMatrix(matrixB);
 
@@ -207,23 +205,17 @@ export async function getCatalogFieldIds() {
   const {productIdFields, variantIdFields} = findProductIdField(
     matrixA,
     matrixB,
-    uniqueObjectTypeAMetadataKeys,
     uniqueObjectTypeBMetadataKeys,
-    fieldTable
+    uniqueObjectTypeAMetadataKeys
   );
 
   if (productIdFields.length === 0) {
-    const {productIdFields, variantIdFields} = findProductIdField(
+    return findProductIdField(
       matrixA,
       matrixB,
-      uniqueObjectTypeBMetadataKeys,
       uniqueObjectTypeAMetadataKeys,
-      fieldTable
+      uniqueObjectTypeBMetadataKeys
     );
-    return {
-      productIdFields,
-      variantIdFields,
-    };
   }
 
   return {
@@ -233,29 +225,28 @@ export async function getCatalogFieldIds() {
   };
 }
 
-function findProductIdField(
-  matrixA: number[][],
-  matrixB: number[][],
-  uniqueObjectTypeAMetadataKeys: number[],
-  uniqueObjectTypeBMetadataKeys: number[],
-  fieldTable: FieldTable
+function findProductIdField<T>(
+  matrixA: Map<string, MatrixValue[]>,
+  matrixB: Map<string, MatrixValue[]>,
+  uniqueObjectTypeAMetadataKeys: string[],
+  uniqueObjectTypeBMetadataKeys: string[]
 ) {
   // TODO: can be optimized
-  const productIdCandidates: number[] = [];
-  for (const metdataKeyIndex of uniqueObjectTypeAMetadataKeys) {
-    const objectTypeASet = new Set(matrixA[metdataKeyIndex]);
-    const objectTypeBSet = new Set(matrixB[metdataKeyIndex]);
+  const productIdCandidates: string[] = [];
+  for (const metdataKey of uniqueObjectTypeAMetadataKeys) {
+    const objectTypeASet = new Set(matrixA.get(metdataKey));
+    const objectTypeBSet = new Set(matrixB.get(metdataKey));
     if (setAreEqual(objectTypeASet, objectTypeBSet)) {
-      productIdCandidates.push(metdataKeyIndex);
+      productIdCandidates.push(metdataKey);
     }
   }
   return {
-    productIdFields: productIdCandidates.map((i) => fieldTable[i]),
-    variantIdFields: uniqueObjectTypeBMetadataKeys.map((i) => fieldTable[i]),
+    productIdFields: productIdCandidates,
+    variantIdFields: uniqueObjectTypeBMetadataKeys,
   };
 }
 
-function setAreEqual(setA: Set<number>, setB: Set<number>) {
+function setAreEqual<T>(setA: Set<T>, setB: Set<T>) {
   if (setA.size !== setB.size) return false;
   for (const a of setA) if (!setB.has(a)) return false;
   return true;
@@ -266,19 +257,36 @@ function setAreEqual(setA: Set<number>, setB: Set<number>) {
  * @param {number[][]} 2 matrix of METADATA_KEY x PRODUCT_NUMBER giving the metadata value for a product on a specific metadata.
  * @return {*}  {number[]} the metadata key indeces for which the value is unique across all documents
  */
-function findUniqueMetadataKeysInMatrix(matrix: number[][]): number[] {
-  const metadataKeyCandidates: number[] = [];
-  for (let i = 0; i < matrix.length; i++) {
-    const metadataKeyRow = matrix[i];
-    if (!isUniqueAcrossDocument(metadataKeyRow)) {
+function findUniqueMetadataKeysInMatrix(
+  matrix: Map<string, MatrixValue[]>
+): string[] {
+  const metadataKeyCandidates: string[] = [];
+  for (const [key, values] of matrix.entries()) {
+    if (!isUniqueAcrossDocument(values)) {
       continue;
     }
-    metadataKeyCandidates.push(i);
+    metadataKeyCandidates.push(key);
   }
+
   return metadataKeyCandidates;
 }
 
-function isUniqueAcrossDocument(possibleValues: number[]): boolean {
+function isUniqueAcrossDocument<T>(possibleValues: T[]): boolean {
   const set = new Set(possibleValues);
   return set.size === possibleValues.length;
 }
+
+async function main() {
+  console.time('global');
+  const fields = await getCatalogFieldIds();
+  console.timeEnd('global');
+  console.log(fields);
+
+  const mu = process.memoryUsage();
+  // # bytes / KB / MB / GB
+  const gbNow = mu['heapUsed'] / 1024 / 1024;
+  const gbRounded = Math.round(gbNow * 100) / 100;
+
+  console.log(`Heap allocated ${gbRounded} MB`);
+}
+main();
